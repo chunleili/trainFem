@@ -6,7 +6,7 @@ import taichi as ti
 from train_fem import FEMSurrogate
 
 # 导入FEM求解器（已经初始化了Taichi）
-from tiFEM.tiFEM import (
+from tiFEM import (
     get_vertices, init, cg,
     pos, pos0, vel, force, mass, tet_indices, tri_indices, edge_indices,
     n_verts,
@@ -46,7 +46,7 @@ class FEMInference:
         cur_mass = mass.to_numpy().copy()  # (4,)
         
         # 获取rest_matrix
-        from tiFEM.tiFEM import rest_matrix
+        from tiFEM import rest_matrix
         cur_rest_matrix = rest_matrix.to_numpy()[0].copy()  # (3, 3)
         
         # 计算变形梯度F
