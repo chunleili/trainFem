@@ -11,7 +11,7 @@ from torch.utils.tensorboard import SummaryWriter
 import taichi as ti
 
 # 导入FEM求解器（已经初始化了Taichi）
-from tiFEM.tiFEM import (
+from tiFEM import (
     get_vertices, get_indices, init, cg, 
     pos, pos0, vel, force, mass, rest_matrix, rest_volume, tet_indices,
     compute_potential_energy, compute_volume_error,
