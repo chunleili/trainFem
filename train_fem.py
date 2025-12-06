@@ -11,8 +11,8 @@ g_output_dim = 24   # 输出维度 (不再预测时间)
 g_hidden_dim = 256 # 隐藏层维度
 g_batch_size = 32  # 批大小
 g_val_split = 0.2   # 验证集比例
-g_load_data = False  # 是否加载已存在的数据集
-g_save_data = True   # 是否保存生成的数据集
+g_load_data = True  # 是否加载已存在的数据集
+g_save_data = False   # 是否保存生成的数据集
 
 
 import numpy as np
@@ -27,6 +27,10 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.tensorboard import SummaryWriter
 import taichi as ti
+from torch_geometric.data import Data
+
+# 自定义MeshGraphNet
+from model.model import EncoderProcesserDecoder
 
 # 导入FEM求解器（已经初始化了Taichi）
 from tiFEM import (
@@ -301,14 +305,33 @@ class FEMSurrogate(nn.Module):
         super(FEMSurrogate, self).__init__()
         self.input_dim = input_dim
         self.output_dim = output_dim
-        
-        # 简单的全连接网络
-        self.fc1 = nn.Linear(input_dim, hidden_dim)
-        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
-        self.fc3 = nn.Linear(hidden_dim, output_dim)
-        self.relu = nn.ReLU()
-        self.dropout = nn.Dropout(0.1)
-        
+        self.n_nodes = n_nodes
+        self.hidden_dim = hidden_dim
+        self.message_passing_num = message_passing_num
+
+        # 节点特征 21维: 3步*(pos3+vel3)=18 + 3个时间标量
+        self.node_feat_dim = 21
+        # 边特征 6维: 使用最后一步的 sender/receiver 差值 (pos3+vel3)
+        self.edge_feat_dim = 6
+
+        # 四面体全连接边（无自环）
+        edges = []
+        for i in range(n_nodes):
+            for j in range(n_nodes):
+                if i != j:
+                    edges.append([i, j])
+        self.edge_index = torch.tensor(edges, dtype=torch.long).t().contiguous()
+
+        # MeshGraphNet（Encoder-Processor-Decoder）
+        # 输出每个节点6维 (pos3 + vel3)，共24维
+        self.gnn = EncoderProcesserDecoder(
+            message_passing_num=message_passing_num,
+            node_input_size=self.node_feat_dim,
+            edge_input_size=self.edge_feat_dim,
+            hidden_size=hidden_dim,
+            output_size=6,
+        )
+
     def forward(self, x):
         # x: (batch, 75) = 3*24 + 3
         x = self.relu(self.fc1(x))
