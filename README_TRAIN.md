@@ -31,8 +31,8 @@ python train_fem.py
 ```
 
 这将：
-- 生成1000个训练样本（使用FEM求解器）
-- 保存最佳模型到 `best_fem_model.pth`
+- 生成100*100个训练样本（使用FEM求解器），保存到 `fem_dataset.npz`
+- 训练并保存最佳模型到 `best_fem_model.pth`
 
 训练过程约需要几分钟，取决于硬件配置。
 

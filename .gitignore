@@ -1,1 +1,6 @@
 __pycache__
+pic/*
+*.mp4
+*.pkl
+*.pth
+runs/*

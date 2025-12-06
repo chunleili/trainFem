@@ -6,17 +6,21 @@ import taichi as ti
 
 ti.init(arch=ti.cuda)
 
+headless_render = True
 
 E, nu = 5e4, 0.0
 mu, la = E / (2 * (1 + nu)), E * nu / ((1 + nu) * (1 - 2 * nu))  # lambda = 0
 density = 1000.0
 # dt = 1e-4
 dt = 1e-2
+g_current_time = 0.0
+g_current_step = 0
 
 
 n_verts = 4
 dx = 1.0 
 n_cells = 1
+gravity_constant = -9.8
 
 tet_indices = ti.Vector.field(4, dtype=ti.i32, shape=n_cells)
 tri_indices = ti.Vector.field(3, dtype=ti.i32, shape=4*n_cells)
@@ -31,6 +35,8 @@ mass = ti.field(dtype=ti.f32, shape=n_verts)
 
 rest_matrix = ti.Matrix.field(3, 3, dtype=ti.f32, shape=n_cells)
 rest_volume = ti.field(dtype=ti.f32, shape=n_cells)
+deformation_gradient = ti.Matrix.field(3, 3, dtype=ti.f32, shape=n_cells)
+PK1 = ti.Matrix.field(3, 3, dtype=ti.f32, shape=n_cells)
 
 F_mul_ans = ti.Vector.field(3, dtype=ti.f32, shape=n_verts)
 F_b = ti.Vector.field(3, dtype=ti.f32, shape=n_verts)
@@ -88,6 +94,7 @@ def ssvd(F):
 @ti.func
 def get_force_func(c, verts):
     F = Ds(verts) @ rest_matrix[c]
+    deformation_gradient[c] = F # record deformation gradient
     U, sig, V = ssvd(F)
     R = U @ V.transpose()
     I = ti.Matrix.identity(ti.f32, 3)
@@ -109,6 +116,8 @@ def get_force_func(c, verts):
     # J = F.determinant()
     # P = mu * (F - FT_inv) + la * ti.log(J) * FT_inv
 
+    PK1[c] = P  # record first Piola-Kirchhoff stress
+
     H = -rest_volume[c] * P @ rest_matrix[c].transpose()
     for i in ti.static(range(3)):
         for j in ti.static(range(3)):
@@ -121,7 +130,7 @@ def get_force():
     for c in tet_indices:
         get_force_func(c, tet_indices[c])
     for u in force:
-        force[u].y -= 9.8 * mass[u]
+        force[u].y += gravity_constant * mass[u]
 
 
 
@@ -199,6 +208,7 @@ def cg():
             break
         beta = r_2_new / r_2
         add(d, F_r0, beta, d)
+    # cg iteration finally output vel
     force.fill(0)
     add(pos, pos, dt, vel)
 
@@ -213,6 +223,8 @@ def advect():
 
 @ti.kernel
 def init():
+    g_current_step = 0
+    g_current_time = 0.0
     for u in pos:
         pos[u] = pos0[u]
         vel[u] = [0.0] * 3
@@ -239,16 +251,20 @@ def floor_bound():
 
 
 # implicit substep
-def substep():
+def substep_implicit():
     cg()
     floor_bound()
 
 # uncomment to see the explicit substep
-# def substep():
-#     for i in range(10):
-#         get_force()
-#         advect()
-#     floor_bound()
+def substep_explicit():
+    for i in range(10):
+        get_force()
+        advect()
+    floor_bound()
+
+def substep():
+    substep_implicit()
+    # substep_explicit()
 
 @ti.kernel
 def get_vol_err() -> ti.f32:
@@ -282,23 +298,8 @@ def compute_potential_energy() -> ti.f32:
     return elastic_energy + gravity_energy
 
 
-@ti.kernel
-def compute_volume_error() -> ti.f32:
-    """计算体积误差：(当前体积 - 初始体积) / 初始体积"""
-    vol_err = 0.0
-    for c in tet_indices:
-        verts = tet_indices[c]
-        F = Ds(verts) @ rest_matrix[c]
-        J = F.determinant()  # 体积比 = det(F)
-        # 体积误差 = |J - 1|，理想情况下不可压缩材料 J = 1
-        vol_err += ti.abs(J - 1.0)
-    return vol_err
-
-def main():
-    get_vertices()
-    get_indices()
-    init()
-
+def render(substep,init):
+    
     def T(a):
         phi, theta = np.radians(28), np.radians(32)
 
@@ -310,10 +311,11 @@ def main():
         u, v = x, y * C + z * S
         return np.array([u, v]).swapaxes(0, 1) + 0.5
 
-    gui = ti.GUI("Implicit FEM")
-    pause = True
+    gui = ti.GUI("Implicit FEM", show_gui=not headless_render)  # 启用GUI显示
+    pause = False
     frame_id = 0
     vol_err = 0.0
+    global g_current_step, g_current_time
     while gui.running:
         if not pause:
             substep()
@@ -321,6 +323,9 @@ def main():
                 vol_err = get_vol_err()
                 print(f"Frame {frame_id}, Volume Error: {vol_err:.2e}")
             frame_id += 1
+            g_current_step += 1
+            g_current_time += dt
+
         if gui.get_event(ti.GUI.PRESS):
             if gui.event.key in [ti.GUI.ESCAPE, ti.GUI.EXIT]:
                 break
@@ -364,8 +369,89 @@ def main():
         gui.circles(vertices_2d, radius=5, color=0xBA543A)
         
         gui.text(f"Volume Error: {vol_err:.2e}", pos=(0.02, 0.95), color=0x000000)
-        # gui.show(f"pic/{frame_id:06d}.png")
-        gui.show()
+        gui.text(f"step: {g_current_step:.2e}", pos=(0.02, 0.90), color=0x000000)
+        gui.text(f"time: {g_current_time:.2e} s", pos=(0.02, 0.85), color=0x000000)
+        if headless_render:
+            gui.show(f"pic/{g_current_step:06d}.png")
+        else:
+            gui.show()
+
+
+def main():
+    get_vertices()
+    get_indices()
+    init()
+    render(substep,init)
+
+    # def T(a):
+    #     phi, theta = np.radians(28), np.radians(32)
+
+    #     a = a - 0.2
+    #     x, y, z = a[:, 0], a[:, 1], a[:, 2]
+    #     c, s = np.cos(phi), np.sin(phi)
+    #     C, S = np.cos(theta), np.sin(theta)
+    #     x, z = x * c + z * s, z * c - x * s
+    #     u, v = x, y * C + z * S
+    #     return np.array([u, v]).swapaxes(0, 1) + 0.5
+
+    # gui = ti.GUI("Implicit FEM")  # 启用GUI显示
+    # pause = False
+    # frame_id = 0
+    # vol_err = 0.0
+    # while gui.running:
+    #     if not pause:
+    #         substep()
+    #         if frame_id % 20 == 0 and frame_id > 0:
+    #             vol_err = get_vol_err()
+    #             print(f"Frame {frame_id}, Volume Error: {vol_err:.2e}")
+    #         frame_id += 1
+    #     if gui.get_event(ti.GUI.PRESS):
+    #         if gui.event.key in [ti.GUI.ESCAPE, ti.GUI.EXIT]:
+    #             break
+    #         if gui.event.key == ti.GUI.SPACE:
+    #             pause = not pause
+    #     if gui.is_pressed("r"):
+    #         init()
+    #     gui.clear(0xFFFFFF)
+        
+    #     # draw ground grid on y=0
+    #     grid_size = 10
+    #     grid_step = 0.2
+    #     for i in range(grid_size + 1):
+    #         x = i * grid_step - 1
+    #         # lines along x direction
+    #         p1 = T(np.array([[x, 0, -1]]) / 3)[0]
+    #         p2 = T(np.array([[x, 0, 1]]) / 3)[0]
+    #         gui.line(p1, p2, radius=1, color=0xCCCCCC)
+            
+    #         z = i * grid_step - 1
+    #         # lines along z direction
+    #         p1 = T(np.array([[-1, 0, z]]) / 3)[0]
+    #         p2 = T(np.array([[1, 0, z]]) / 3)[0]
+    #         gui.line(p1, p2, radius=1, color=0xCCCCCC)
+        
+    #     # project vertices
+    #     vertices_2d = T(pos.to_numpy() / 3)
+        
+    #     # draw triangle faces (semi-transparent)
+    #     for i in range(4):
+    #         face = tri_indices.to_numpy()[i]
+    #         triangle = vertices_2d[face]
+    #         gui.triangle(triangle[0], triangle[1], triangle[2], color=0xEECCAA)
+        
+    #     # draw wireframe edges
+    #     for i in range(6):
+    #         edge = edge_indices.to_numpy()[i]
+    #         gui.line(vertices_2d[edge[0]], vertices_2d[edge[1]], radius=2, color=0x0000FF)
+        
+    #     # draw vertices
+    #     gui.circles(vertices_2d, radius=5, color=0xBA543A)
+        
+    #     gui.text(f"Volume Error: {vol_err:.2e}", pos=(0.02, 0.95), color=0x000000)
+    #     gui.text(f"step: {frame_id:.2e}", pos=(0.02, 0.90), color=0x000000)
+    #     gui.text(f"time: {frame_id * dt:.2e} s", pos=(0.02, 0.85), color=0x000000)
+    #     # gui.show(f"pic/{frame_id:06d}.png")
+    #     gui.show()
 
 
 
