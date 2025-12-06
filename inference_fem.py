@@ -32,8 +32,10 @@ class FEMInference:
         self.model.eval()
         
         # 维护3步历史状态缓冲区
-        self.state_buffer = deque(maxlen=3)  # 存储(state, time)
-        self.current_time = 0.0
+        self.state_buffer = deque(maxlen=3)  # 存储state
+        
+        # 重力向量
+        self.gravity_vec = np.array([0.0, gravity_constant, 0.0], dtype=np.float32)
         
         print(f"Model loaded from {model_path} on {device}")
     
@@ -45,8 +47,7 @@ class FEMInference:
             vel.to_numpy().flatten(),
         ]).astype(np.float32)
         
-        self.state_buffer.append((state, self.current_time))
-        self.current_time += dt
+        self.state_buffer.append(state)
     
     def predict_next_state(self):
         """
@@ -59,13 +60,14 @@ class FEMInference:
         if len(self.state_buffer) < 3:
             raise ValueError(f"Need 3 history states, but only have {len(self.state_buffer)}")
         
-        # 构建输入: (state1, time1, state2, time2, state3, time3)
+        # 构建输入: (state1, state2, state3, gravity)
         states = list(self.state_buffer)
-        s1, t1 = states[0]
-        s2, t2 = states[1]
-        s3, t3 = states[2]
+        s1 = states[0]
+        s2 = states[1]
+        s3 = states[2]
         
-        input_window = np.concatenate([s1, [t1], s2, [t2], s3, [t3]]).astype(np.float32)  # (75,)
+        # 拼接3个状态和重力向量: 24+24+24+3 = 75
+        input_window = np.concatenate([s1, s2, s3, self.gravity_vec]).astype(np.float32)  # (75,)
         
         # 转为张量
         input_tensor = torch.from_numpy(input_window).unsqueeze(0).to(self.device)  # (1, 75)

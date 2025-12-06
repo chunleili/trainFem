@@ -3,10 +3,10 @@
 
 # global parameters
 g_num_traj = 100  # 生成的轨迹数
-g_seq_len = 500     # 每条轨迹的长度(500个时间步=5秒)
+g_seq_len = 500     # 每条轨迹的长度(时间步数)
 g_samples_per_traj = 100  # 每条轨迹随机采样的窗口数
 g_epochs = 1000       # 训练轮数
-g_input_dim = 75    # 输入维度
+g_input_dim = 75    # 输入维度: 3*(pos12+vel12) + 3*gravity3 = 72+3=75
 g_output_dim = 24   # 输出维度 (不再预测时间)
 g_hidden_dim = 256 # 隐藏层维度
 g_batch_size = 32  # 批大小
@@ -60,7 +60,9 @@ class FEMDataGenerator:
             vel[i] = v_array[i]
 
         states = []  # 记录所有时间步的状态
-        times = []   # 记录时间
+        
+        # 重力向量 (0, gravity_constant, 0) 在y方向
+        gravity_vec = np.array([0.0, gravity_constant, 0.0], dtype=np.float32)
 
         # 生成完整序列
         for t in range(g_seq_len):
@@ -70,7 +72,6 @@ class FEMDataGenerator:
                 vel.to_numpy().flatten(),
             ]).astype(np.float32)
             states.append(state)
-            times.append(np.float32(t * dt))  # 实际时间
             
             # 前进一步
             substep_implicit()
@@ -88,10 +89,10 @@ class FEMDataGenerator:
         sampled_starts = np.random.choice(valid_starts, size=num_samples, replace=False)
         
         for i in sampled_starts:
-            # 输入: (state1,time1,state2,time2,state3,time3)
+            # 输入: (state1, state2, state3, gravity*3)
             s1, s2, s3 = states[i], states[i+1], states[i+2]
-            t1, t2, t3 = times[i], times[i+1], times[i+2]
-            input_window = np.concatenate([s1, [t1], s2, [t2], s3, [t3]])  # (75,)
+            # 拼接3个状态和重力向量: 24+24+24+3 = 75
+            input_window = np.concatenate([s1, s2, s3, gravity_vec])  # (75,)
             
             # 输出: 第4步状态(24) 不再预测时间
             output_state = states[i+window_size]  # (24,)
@@ -294,7 +295,7 @@ class FEMTrainer:
 
 
 class FEMSurrogate(nn.Module):
-    """神经网络:用前3步预测下一步(包含时间信息)"""
+    """神经网络:用前3步预测下一步(包含重力信息)"""
     
     def __init__(self, input_dim=75, hidden_dim=256, output_dim=24):
         super(FEMSurrogate, self).__init__()
@@ -309,7 +310,7 @@ class FEMSurrogate(nn.Module):
         self.dropout = nn.Dropout(0.1)
         
     def forward(self, x):
-        # x: (batch, 72)
+        # x: (batch, 75) = 3*24 + 3
         x = self.relu(self.fc1(x))
         x = self.dropout(x)
         x = self.relu(self.fc2(x))
@@ -326,8 +327,8 @@ def main():
     print("Step 1: Generating training data...")
     print(f"Number of trajectories: {g_num_traj}")
     print(f"Trajectory duration: {g_seq_len * dt} seconds ({g_seq_len} timesteps)")
-    print(f"Random sampling: {g_samples_per_traj} windows per trajectory")
-    print("Window: 3 steps + time -> predict 4th step")
+    print(f"Randomly sampling {g_samples_per_traj} windows per trajectory...")
+    print("Window: 3 steps + gravity -> predict 4th step")
     generator = FEMDataGenerator()
     
     # 可选：保存数据集到文件
@@ -360,7 +361,7 @@ def main():
     # 3. 创建模型
     print("=" * 50)
     print("Step 2: Creating neural network model...")
-    print(f"Input: 3 steps × 24 features + 3 times = {g_input_dim} dim")
+    print(f"Input: 3 steps × 24 features + gravity(3) = {g_input_dim} dim")
     print(f"Output: next step state = {g_output_dim} dim (no time)")
     model = FEMSurrogate(input_dim=g_input_dim, hidden_dim=g_hidden_dim, output_dim=g_output_dim)
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
