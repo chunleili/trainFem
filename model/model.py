@@ -25,14 +25,27 @@ class Encoder(nn.Module):
                 hidden_size=128):
         super(Encoder, self).__init__()
 
-        self.eb_encoder = build_mlp(edge_input_size, hidden_size, hidden_size)
         self.nb_encoder = build_mlp(node_input_size, hidden_size, hidden_size)
+        # 如果有边特征，创建边编码器
+        if edge_input_size > 0:
+            self.eb_encoder = build_mlp(edge_input_size, hidden_size, hidden_size)
+        else:
+            self.eb_encoder = None
     
     def forward(self, graph):
 
         node_attr, edge_attr = graph.x, graph.edge_attr
         node_ = self.nb_encoder(node_attr)
-        edge_ = self.eb_encoder(edge_attr)
+        
+        # 如果有边特征，编码它们；否则创建零张量
+        if self.eb_encoder is not None and edge_attr is not None:
+            edge_ = self.eb_encoder(edge_attr)
+        elif edge_attr is None:
+            # 创建零向量作为边特征
+            import torch
+            edge_ = torch.zeros(graph.edge_index.shape[1], node_.shape[1], device=node_.device)
+        else:
+            edge_ = edge_attr
         
         return Data(x=node_, edge_attr=edge_, edge_index=graph.edge_index)
 

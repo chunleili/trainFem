@@ -3,20 +3,18 @@
 import numpy as np
 import torch
 import taichi as ti
-from collections import deque
+from torch_geometric.data import Data, Batch
 
-# 导入训练脚本中的模型定义
-import sys
-sys.path.append('.')
-from train_fem import FEMSurrogate
+# 导入模型定义
+from model.network import FEMSurrogate
 
 # 导入FEM求解器（已经初始化了Taichi）
 from tiFEM import (
-    get_vertices, init, cg,
-    pos, pos0, substep_implicit, vel, force, mass, tet_indices, tri_indices, edge_indices,
+    get_vertices, init, get_indices,
+    pos, pos0, substep_implicit, vel,
     n_verts, dt,
     compute_potential_energy, get_vol_err,
-    get_indices, floor_bound, gravity_constant
+    edge_indices, gravity_constant
 )
 
 
@@ -25,80 +23,83 @@ class FEMInference:
     
     def __init__(self, model_path='best_fem_model.pth', device='cuda'):
         self.device = device
-        # 使用训练时的维度: 输入75维, 输出24维
-        self.model = FEMSurrogate(input_dim=75, hidden_dim=256, output_dim=24)
+        # 使用训练时的配置 (必须与训练时的参数一致)
+        self.model = FEMSurrogate(
+            n_nodes=4, 
+            message_passing_num=3, 
+            hidden_dim=128,
+            node_feat_dim=3,      # 速度维度
+            edge_feat_dim=6       # current_len(3) + rest_len(3)
+        )
         self.model.load_state_dict(torch.load(model_path, map_location=device))
         self.model.to(device)
         self.model.eval()
+
+        # 预先缓存边索引
+        edges_np = edge_indices.to_numpy()
+        self.edge_index = torch.tensor(edges_np, dtype=torch.long).t().contiguous()
         
-        # 维护3步历史状态缓冲区
-        self.state_buffer = deque(maxlen=3)  # 存储state
-        
-        # 重力向量
-        self.gravity_vec = np.array([0.0, gravity_constant, 0.0], dtype=np.float32)
+        self.step_count = 0  # 用于前3步的FEM模拟
         
         print(f"Model loaded from {model_path} on {device}")
     
-    def add_current_state(self):
-        """将当前状态添加到历史缓冲区"""
-        # 状态格式: pos(12) + vel(12) = 24维
-        state = np.concatenate([
-            pos.to_numpy().flatten(),
-            vel.to_numpy().flatten(),
-        ]).astype(np.float32)
-        
-        self.state_buffer.append(state)
-    
     def predict_next_state(self):
-        """
-        使用3步历史预测下一步状态
+        """使用神经网络预测下一步速度"""
+        # 获取当前状态
+        pos_np = pos.to_numpy()        # [N,3]
+        pos0_np = pos0.to_numpy()      # [N,3]
+        vel_np = vel.to_numpy()        # [N,3]
         
-        Returns:
-            next_pos: (n_verts, 3) 预测的下一步位置
-            next_vel: (n_verts, 3) 预测的下一步速度
-        """
-        if len(self.state_buffer) < 3:
-            raise ValueError(f"Need 3 history states, but only have {len(self.state_buffer)}")
+        # 转为torch
+        pos_torch = torch.from_numpy(pos_np).float()
+        pos0_torch = torch.from_numpy(pos0_np).float()
+        vel_torch = torch.from_numpy(vel_np).float()
         
-        # 构建输入: (state1, state2, state3, gravity)
-        states = list(self.state_buffer)
-        s1 = states[0]
-        s2 = states[1]
-        s3 = states[2]
+        # 构建图特征
+        src = self.edge_index[0]   # [E]
+        dst = self.edge_index[1]   # [E]
+
+        current_len = pos_torch[dst] - pos_torch[src]     # [E,3]
+        rest_len    = pos0_torch[dst] - pos0_torch[src]   # [E,3]
+        edge_attr = torch.cat([current_len, rest_len], dim=-1)  # [E,6]
         
-        # 拼接3个状态和重力向量: 24+24+24+3 = 75
-        input_window = np.concatenate([s1, s2, s3, self.gravity_vec]).astype(np.float32)  # (75,)
-        
-        # 转为张量
-        input_tensor = torch.from_numpy(input_window).unsqueeze(0).to(self.device)  # (1, 75)
+        # 创建图
+        graph = Data(
+            x=vel_torch,
+            edge_index=self.edge_index,
+            edge_attr=edge_attr.float(),
+        )
+        batch = Batch.from_data_list([graph]).to(self.device)
         
         # 推理
         with torch.no_grad():
-            output = self.model(input_tensor)  # (1, 24)
-        
-        output_np = output.cpu().numpy()[0]  # (24,)
-        
-        # 解析输出: pos(12) + vel(12)
-        next_pos = output_np[:12].reshape(n_verts, 3)
-        next_vel = output_np[12:].reshape(n_verts, 3)
+            output = self.model(batch)  # (num_nodes, 3) - 预测速度变化
 
-        pos.from_numpy(next_pos)
-        vel.from_numpy(next_vel)
+        output_np = output.cpu().numpy()
+        next_vel = output_np  # [N,3]
         
-        return next_pos, next_vel
+        return next_vel
     
     def run_nn_step(self):
-        """运行一步模拟（使用神经网络预测,除了前三步）"""
-        if len(self.state_buffer) < 3:
-            substep_implicit()
-            self.add_current_state()
-            return
-            
-        # 预测下一步状态
-        self.predict_next_state()
+        """运行一步模拟"""
+        self.step_count += 1
         
-        # 添加新状态到缓冲区(自动移除最老的)
-        self.add_current_state()
+        if self.step_count <= 3:
+            # 前3步使用FEM真实模拟
+            substep_implicit()
+        else:
+            # 之后使用神经网络预测
+            next_vel = self.predict_next_state()
+            
+            # 更新速度
+            for i in range(n_verts):
+                vel[i] = next_vel[i]
+            
+            # 更新位置
+            for i in range(n_verts):
+                new_pos = pos[i] + vel[i] * dt
+                pos[i] = new_pos
+
 
 def main():
     get_vertices()
@@ -111,6 +112,7 @@ def main():
     
     from tiFEM import render
     render(inference.run_nn_step, init)
+
 
 if __name__ == "__main__":
     main()

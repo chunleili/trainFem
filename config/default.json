@@ -1,0 +1,11 @@
+{
+    "num_trajectories": 20,
+    "sequence_length": 500,
+    "samples_per_trajectory": 100,
+    "epochs": 1000,
+    "hidden_dim": 128,
+    "message_passing_num": 3,
+    "batch_size": 32,
+    "validation_split": 0.2,
+    "force_generate_data": true
+}

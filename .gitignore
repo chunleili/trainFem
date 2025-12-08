@@ -4,3 +4,6 @@ pic/*
 *.pkl
 *.pth
 runs/*
+*.swp
+*.swo
+*.viminspector.json
