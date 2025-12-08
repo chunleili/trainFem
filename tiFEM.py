@@ -220,6 +220,11 @@ def advect():
         pos[p] += dt * vel[p]
         force[p] = ti.Vector([0, 0, 0])
 
+@ti.kernel
+def integrate_vel_explicit_euler():
+    for p in pos:
+        pos[p] += dt * vel[p]
+
 
 @ti.kernel
 def init():

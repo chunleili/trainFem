@@ -29,6 +29,7 @@ class Args:
         self.gen = cmd_args.gen
         self.force_gen_data = config_dict.get("force_generate_data", False)
         self.save_sim = config_dict.get("save_sim", False)
+        self.enable_profiler = config_dict.get("enable_profiler", False)
         if self.force_gen_data is True:
             self.gen = True
 
