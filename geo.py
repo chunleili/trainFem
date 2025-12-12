@@ -108,6 +108,10 @@ class Geo:
         self.pointref = self._pairListToDict(self.topology['pointref'])
 
         self.attributes = self._pairListToDict(self.attributes)
+        
+        # 初始化属性字典
+        self.pointattr = {}
+        self.primattr = {}
 
         if self.only_P:
             self.parse_pointattributes()
@@ -179,37 +183,58 @@ class Geo:
         return self.vert
 
     def parse_pointattributes(self):
-        self.pointattributes = self.attributes['pointattributes']
-        class AttributeValue:
-            None
-        class PointAttr:
-            None
-        # parse point attributes
-        allPointAttr = []
-        for i in range(len(self.pointattributes)):
-            attrRaw0 = self.pointattributes[i][0] #metadata
-            a = PointAttr()
-            for name,item in zip(attrRaw0[0::2],attrRaw0[1::2]):
-                a.__setattr__(name,item)
+        """解析点属性，自动提取所有属性值"""
+        self.rawpointattributes = self.attributes['pointattributes']
+        
+        # 特殊属性名映射（Houdini内置名 -> 常规名）
+        special_name_mapping = {"P": "positions"}
+        
+        for attr_pair in self.rawpointattributes:
+            metadata = self._pairListToDict(attr_pair[0])
+            data = self._pairListToDict(attr_pair[1])
+            
+            # 合并元数据和数据
+            attr_obj = type('Attr', (), {**metadata, **data})()
+            
+            if hasattr(attr_obj, 'name'):
+                target_name = special_name_mapping.get(attr_obj.name, attr_obj.name)
+                value = self._extract_attribute_value(attr_obj)
+                if value is not None:
+                    setattr(self, target_name, value)
+                    self.pointattr[target_name] = value
+                    print(f"Extracted point attribute: {target_name}")
+        
+        return getattr(self, 'positions', None)
+    
+    def _extract_attribute_value(self, attr):
+        """提取Houdini属性值，兼容 tuples / arrays 包装
+        
+        使用 size 判定维度：size==1 时扁平化为一维数组；size>1 保持二维结构。
+        """
+        if not hasattr(attr, 'values'):
+            return None
 
-            attrRaw1 = self.pointattributes[i][1] #data
-            for name,item in zip(attrRaw1[0::2],attrRaw1[1::2]):
-                a.__setattr__(name,item)
+        values = attr.values
+        if not isinstance(values, list):
+            return values
 
-            if a.name == "P":
-                self.positions = a.values[5]
-            if a.name == "gluetoanimation":
-                self.gluetoanimation = a.values[5][0]
-            if a.name == "mass":
-                self.mass = a.values[5][0]
-            if a.name == "pts":
-                self.pts = a.values[5][0]
-            if a.name == "target_pos":
-                self.target_pos = a.values[5]
-            if a.name == "target_pts":
-                self.target_pts = a.values
-            allPointAttr.append(a)
-        return self.positions
+        # 转成字典方便取值
+        value_dict = self._pairListToDict(values) if len(values) % 2 == 0 else None
+        if not value_dict:
+            return values
+
+        # 提取 size 和 data
+        size = value_dict.get("size")
+        data = value_dict.get("tuples") or value_dict.get("arrays")
+        
+        if data is None or not isinstance(data, list):
+            return values
+
+        # size==1 时扁平化：[[v1, v2, ...]] -> [v1, v2, ...]
+        if size == 1 and len(data) == 1 and isinstance(data[0], list):
+            return data[0]
+        
+        return data
 
     def get_pos(self):
         return self.positions
@@ -271,40 +296,30 @@ class Geo:
         return self.restlength
 
     def parse_primattributes(self):
+        """解析primitive属性，自动提取所有属性值"""
         if 'primitiveattributes' not in self.attributes:
             return
         
         self.primitiveattributes = self.attributes['primitiveattributes']
-        class AttributeValue:
-            None
-        class PrimAttr:
-            None
-        # parse point attributes
-        allPrimAttr = []
-        for i in range(len(self.primitiveattributes)):
-            attrRaw0 = self.primitiveattributes[i][0] #metadata
-            a = PrimAttr()
-            for name,item in zip(attrRaw0[0::2],attrRaw0[1::2]):
-                a.__setattr__(name,item)
-
-            attrRaw1 = self.primitiveattributes[i][1] #data
-            for name,item in zip(attrRaw1[0::2],attrRaw1[1::2]):
-                a.__setattr__(name,item)
-
-            if a.name == "extraSpring":
-                extraSpring_dict = a.dicts
-                self.parse_extraSpring_from_dict(extraSpring_dict)
-            if a.name == "target_pt":
-                self.target_pt = a.values[5][0]
-            if a.name == "pts":
-                self.pts = a.values[5][0]
-            if a.name == "stiffness":
-                self.stiffness = a.values[5][0]
-            if a.name == "restlength":
-                self.restlength = a.values[5][0]
-            if a.name == "target_pos":
-                self.target_pos = a.values[5]
-            allPrimAttr.append(a)
+        
+        for attr_pair in self.primitiveattributes:
+            metadata = self._pairListToDict(attr_pair[0])
+            data = self._pairListToDict(attr_pair[1])
+            
+            # 合并元数据和数据
+            attr_obj = type('Attr', (), {**metadata, **data})()
+            
+            if hasattr(attr_obj, 'name'):
+                if attr_obj.name == "extraSpring" and hasattr(attr_obj, 'dicts'):
+                    # extraSpring 使用特殊的 dicts 结构
+                    self.parse_extraSpring_from_dict(attr_obj.dicts)
+                else:
+                    # 其他属性自动提取
+                    value = self._extract_attribute_value(attr_obj)
+                    if value is not None:
+                        setattr(self, attr_obj.name, value)
+                        self.primattr[attr_obj.name] = value
+                print(f"Extracted primitive attribute: {attr_obj.name}")
 
         
 
@@ -326,8 +341,8 @@ def test_geo_vtk():
 
 
 def test_animation():
-    dir = str(Path(__file__).parent.parent.parent) + "/" + "data/model/pintoanimation/"
-    geo = read_geo(dir+"physdata_78.geo")
+    dir = str(Path(__file__).parent) + "/data/model/"
+    geo = read_geo(dir+"bicep.geo")
     pin = geo.get_gluetoaniamtion()
     vert = geo.get_vert()
     pos = geo.get_pos()
@@ -335,7 +350,9 @@ def test_animation():
     pos[1] = [0,0,0]
     pos[2] = [0,0,0]
     geo.set_positions(pos)
-    geo.write(dir+"physdata_78_out.geo")
+    print(f"{getattr(geo, 'pointattr')}")
+    print(f"{getattr(geo, 'primattr')}")
+    geo.write(dir+"bicep1.geo")
     
 
 if __name__ == '__main__':

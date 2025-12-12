@@ -8,3 +8,4 @@ runs/*
 *.swo
 *.viminspector.json
 muscleDemoTaichi
+data/model

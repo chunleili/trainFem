@@ -1,12 +1,12 @@
 {
-    "num_trajectories": 20,
-    "sequence_length": 500,
+    "num_trajectories": 100,
+    "sequence_length": 1000,
     "samples_per_trajectory": 100,
-    "epochs": 100,
+    "epochs": 200,
     "hidden_dim": 128,
-    "message_passing_num": 3,
+    "message_passing_num": 15,
     "batch_size": 32,
     "validation_split": 0.2,
-    "force_generate_data": false,
+    "force_generate_data": true,
     "enable_profiler": false
 }
